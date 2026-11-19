@@ -64,3 +64,38 @@
 (test yaml-reads-only-the-first-document
   (is (equal "{\"a\":1}" (yaml-json (format nil "---~%a: 1~%---~%b: 2~%")))))
 
+
+(test yaml-line-numbers-survive-backing-up-and-skipping-ahead
+  ;; The line is counted on from the last answer, so check it in every order.
+  (let* ((text (format nil "a: 1~%b: 2~%c:~%  d: 3~%e: 4~%"))
+         (cursor (cl-safe-yaml::make-yaml-cursor :text (coerce text 'simple-string))))
+    (flet ((line-at (position)
+             (setf (cl-safe-yaml::yaml-position cursor) position)
+             (cl-safe-yaml::yaml-line cursor))
+           (expected (position) (1+ (count #\Newline text :end position))))
+      (dolist (position (list 0 7 (length text) 3 12 12 0 20 5 (+ 10 (length text))))
+        (is (= (expected (min position (length text))) (line-at position))
+            "line at offset ~D" position)))))
+
+(test yaml-duplicate-keys-still-name-their-line
+  (multiple-value-bind (object duplicates)
+      (cl-safe-yaml:parse-yaml (format nil "{\"a\": 1,~% \"b\": 2,~% \"a\": 3}"))
+    (is (= 2 (hash-table-count object)))
+    (is (= 1 (length duplicates)))
+    (is (search "3" (princ-to-string (first duplicates))) "the repeat is on line 3")))
+
+(test yaml-reads-a-large-single-line-json-document-in-linear-time
+  ;; What kubectl sends for a server-side apply: JSON, on one line, under a YAML
+  ;; content type. 40,000 keys took most of a minute when each one recounted
+  ;; the text from the top.
+  (let* ((text (with-output-to-string (out)
+                 (write-char #\{ out)
+                 (dotimes (index 40000)
+                   (format out "~:[,~;~]\"key~D\":{\"type\":\"string\",\"description\":\"field number ~D\"}"
+                           (zerop index) index index))
+                 (write-char #\} out)))
+         (start (get-internal-real-time))
+         (object (cl-safe-yaml:parse-yaml text)))
+    (is (= 40000 (hash-table-count object)))
+    (is (< (/ (- (get-internal-real-time) start) internal-time-units-per-second) 5)
+        "~D characters parsed in under five seconds" (length text))))
