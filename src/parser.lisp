@@ -17,7 +17,10 @@
 (defstruct (yaml-cursor (:conc-name yaml-))
   (text "" :type simple-string)
   (position 0 :type fixnum)
-  (duplicates nil :type list))
+  (duplicates nil :type list)
+  ;; Where YAML-LINE last counted to, and the newlines before that point.
+  (counted-position 0 :type fixnum)
+  (counted-newlines 0 :type fixnum))
 
 (defun yaml-error (cursor control &rest arguments)
   "Reject a malformed document with its one-based line number."
@@ -26,8 +29,19 @@
          :message (apply #'format nil control arguments)))
 
 (defun yaml-line (cursor)
-  "Return the one-based line of CURSOR, as Go's YAML decoder counts them."
-  (1+ (count #\Newline (yaml-text cursor) :end (min (yaml-position cursor) (length (yaml-text cursor))))))
+  "Return the one-based line of CURSOR, as Go's YAML decoder counts them.
+Every mapping key asks, to report a duplicate by its line, so the count carries
+on from where the last call stopped rather than starting over: counting from
+the top each time made a 500 kB single-line JSON document take ten seconds."
+  (let* ((text (yaml-text cursor))
+         (position (min (yaml-position cursor) (length text)))
+         (counted (yaml-counted-position cursor)))
+    (if (>= position counted)
+        (incf (yaml-counted-newlines cursor) (count #\Newline text :start counted :end position))
+        ;; The reader backed up to try another reading.
+        (decf (yaml-counted-newlines cursor) (count #\Newline text :start position :end counted)))
+    (setf (yaml-counted-position cursor) position)
+    (1+ (yaml-counted-newlines cursor))))
 
 (defun yaml-column (cursor)
   "Return the zero-based column of CURSOR within its line."
